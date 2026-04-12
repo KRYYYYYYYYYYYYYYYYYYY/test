@@ -1,0 +1,25 @@
+{
+  "_comment": "Server-side noise config for 3X-UI Freedom outbound. Copy this JSON into your outbound settings in the 3X-UI panel: Inbounds → Edit → Outbound → Freedom → noises.",
+  "noises": [
+    {
+      "type": "rand",
+      "packet": "10-50",
+      "delay": "10-16"
+    },
+    {
+      "type": "rand",
+      "packet": "50-200",
+      "delay": "10-16"
+    },
+    {
+      "type": "str",
+      "packet": "GET / HTTP/1.1\r\nHost: ads.x5.ru\r\nAccept: */*\r\nConnection: keep-alive\r\n\r\n",
+      "delay": "1-2"
+    },
+    {
+      "type": "base64",
+      "packet": "7nQBAAABAAAAAAAABnQtcmluZwZtc2VkZ2UDbmV0AAABAAE=",
+      "delay": "10-16"
+    }
+  ]
+}
