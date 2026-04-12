@@ -98,9 +98,23 @@ while [[ -z "${BACKEND_HOST}" ]]; do
     read -rp "    Backend host: " BACKEND_HOST
 done
 
+read -rp "    Backend port (default: 8443): " BACKEND_PORT
+BACKEND_PORT=${BACKEND_PORT:-8443}
+
+# If port != 443, default protocol to http (TLS terminates at Cloudflare)
+if [[ "${BACKEND_PORT}" == "443" ]]; then
+    DEFAULT_PROTO="https"
+else
+    DEFAULT_PROTO="http"
+fi
+read -rp "    Backend protocol (default: ${DEFAULT_PROTO}): " BACKEND_PROTO
+BACKEND_PROTO=${BACKEND_PROTO:-${DEFAULT_PROTO}}
+
 echo ""
 echo -e "${GREEN}    Worker name:   ${WORKER_NAME}${NC}"
 echo -e "${GREEN}    Backend host:  ${BACKEND_HOST}${NC}"
+echo -e "${GREEN}    Backend port:  ${BACKEND_PORT}${NC}"
+echo -e "${GREEN}    Backend proto: ${BACKEND_PROTO}${NC}"
 echo ""
 
 # --- Step 3: Download and upload Worker script ---
@@ -124,6 +138,16 @@ METADATA=$(cat <<METAEOF
       "type": "plain_text",
       "name": "BACKEND_HOST",
       "text": "${BACKEND_HOST}"
+    },
+    {
+      "type": "plain_text",
+      "name": "BACKEND_PORT",
+      "text": "${BACKEND_PORT}"
+    },
+    {
+      "type": "plain_text",
+      "name": "BACKEND_PROTO",
+      "text": "${BACKEND_PROTO}"
     }
   ],
   "compatibility_date": "2024-01-01"
@@ -193,7 +217,7 @@ echo -e "${GREEN}  Deployment complete!${NC}"
 echo -e "${CYAN}================================================${NC}"
 echo ""
 echo -e "  ${GREEN}Worker URL:  https://${WORKER_URL}${NC}"
-echo -e "  Backend:    ${BACKEND_HOST}"
+echo -e "  Backend:    ${BACKEND_PROTO}://${BACKEND_HOST}:${BACKEND_PORT}"
 echo -e "  Worker:     ${WORKER_NAME}"
 echo ""
 echo -e "${CYAN}  Используй этот URL в config-dual.json:${NC}"
