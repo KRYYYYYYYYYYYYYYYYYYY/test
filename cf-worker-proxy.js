@@ -1,10 +1,11 @@
 // =============================================================================
-// Cloudflare Worker — Reverse Proxy for Xray/VLESS (xHTTP transport)
+// Cloudflare Worker — Streaming Reverse Proxy for Xray/VLESS (xHTTP transport)
 // Hides the real VPS IP behind Cloudflare infrastructure.
 // TSPU sees traffic to Cloudflare, not to your server.
 //
 // Uses TCP connect() API to reach raw IP backends directly,
 // bypassing Cloudflare's CDN proxy (avoids Error 1003).
+// Streams the response body instead of buffering (supports xHTTP).
 //
 // Environment variables:
 //   BACKEND_HOST  — VPS IP or domain (e.g., 87.242.119.137)
@@ -30,7 +31,6 @@ export default {
     const path = url.pathname + url.search;
     const method = request.method;
 
-    // Collect headers — use Worker hostname as Host (backend doesn't care)
     const headerLines = [];
     headerLines.push(`${method} ${path} HTTP/1.1`);
     headerLines.push(`Host: ${url.hostname}`);
@@ -38,7 +38,6 @@ export default {
     // Forward relevant headers from the original request
     for (const [key, value] of request.headers) {
       const lk = key.toLowerCase();
-      // Skip hop-by-hop headers and host (already set)
       if (lk === "host" || lk === "connection" || lk === "keep-alive" ||
           lk === "transfer-encoding" || lk === "upgrade" ||
           lk === "proxy-connection") {
@@ -75,71 +74,98 @@ export default {
       }
       writer.releaseLock();
 
-      // Read the full HTTP response from the TCP stream
+      // --- Streaming response: parse headers, then stream body ---
       const reader = socket.readable.getReader();
-      const chunks = [];
-      let totalLength = 0;
+      const decoder = new TextDecoder();
 
-      while (true) {
+      // Accumulate data until we find the header/body boundary (\r\n\r\n)
+      let headerBuf = new Uint8Array(0);
+      let headerEndIdx = -1;
+
+      while (headerEndIdx === -1) {
         const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-        totalLength += value.length;
-        if (totalLength > 50 * 1024 * 1024) break; // 50MB safety limit
-      }
+        if (done) {
+          return new Response("Backend closed connection before headers", { status: 502 });
+        }
 
-      if (totalLength === 0) {
-        return new Response("Backend returned empty response", { status: 502 });
-      }
+        // Append new data to header buffer
+        const merged = new Uint8Array(headerBuf.length + value.length);
+        merged.set(headerBuf);
+        merged.set(value, headerBuf.length);
+        headerBuf = merged;
 
-      // Combine chunks into single buffer
-      const fullResponse = new Uint8Array(totalLength);
-      let offset = 0;
-      for (const chunk of chunks) {
-        fullResponse.set(chunk, offset);
-        offset += chunk.length;
-      }
-
-      // Find header/body boundary (\r\n\r\n)
-      let headerEnd = -1;
-      for (let i = 0; i < totalLength - 3; i++) {
-        if (fullResponse[i] === 13 && fullResponse[i+1] === 10 &&
-            fullResponse[i+2] === 13 && fullResponse[i+3] === 10) {
-          headerEnd = i;
-          break;
+        // Search for \r\n\r\n in the accumulated buffer
+        for (let i = Math.max(0, headerBuf.length - value.length - 3);
+             i < headerBuf.length - 3; i++) {
+          if (headerBuf[i] === 13 && headerBuf[i+1] === 10 &&
+              headerBuf[i+2] === 13 && headerBuf[i+3] === 10) {
+            headerEndIdx = i;
+            break;
+          }
         }
       }
 
-      if (headerEnd === -1) {
-        return new Response("Backend returned invalid HTTP response", { status: 502 });
-      }
-
-      // Parse status line and headers (text-safe, ASCII only)
-      const decoder = new TextDecoder();
-      const rawHeaders = decoder.decode(fullResponse.slice(0, headerEnd));
-      const bodyStartIdx = headerEnd + 4;
+      // Parse HTTP status and headers
+      const rawHeaders = decoder.decode(headerBuf.slice(0, headerEndIdx));
+      const bodyStart = headerEndIdx + 4;
 
       const statusLine = rawHeaders.split("\r\n")[0];
       const statusMatch = statusLine.match(/HTTP\/\d\.?\d?\s+(\d+)/);
       const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 200;
 
       const respHeaders = new Headers();
-      const parsedHeaders = rawHeaders.split("\r\n").slice(1);
-      for (const line of parsedHeaders) {
+      const parsedHeaderLines = rawHeaders.split("\r\n").slice(1);
+      for (const line of parsedHeaderLines) {
         const colonIdx = line.indexOf(":");
         if (colonIdx > 0) {
           const hName = line.substring(0, colonIdx).trim();
           const hValue = line.substring(colonIdx + 1).trim();
           const lName = hName.toLowerCase();
+          // Skip hop-by-hop headers
           if (lName === "transfer-encoding" || lName === "connection") continue;
           respHeaders.append(hName, hValue);
         }
       }
 
-      // Return body as raw bytes (preserves binary data)
-      const responseBody = fullResponse.slice(bodyStartIdx);
+      // If no body expected, return immediately
+      if (method === "HEAD" || statusCode === 204 || statusCode === 304) {
+        reader.releaseLock();
+        return new Response(null, { status: statusCode, headers: respHeaders });
+      }
 
-      return new Response(responseBody, {
+      // Leftover body data from the header read
+      const leftover = headerBuf.slice(bodyStart);
+
+      // Create a streaming response body using TransformStream
+      const { readable, writable } = new TransformStream();
+      const bodyWriter = writable.getWriter();
+
+      // Pump data from TCP socket to response stream in background
+      const pump = async () => {
+        try {
+          // Write leftover bytes first
+          if (leftover.length > 0) {
+            await bodyWriter.write(leftover);
+          }
+          // Stream remaining data from TCP socket
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            await bodyWriter.write(value);
+          }
+        } catch (e) {
+          // Connection closed or errored — just finish
+        } finally {
+          try { await bodyWriter.close(); } catch {}
+          try { reader.releaseLock(); } catch {}
+        }
+      };
+
+      // Start pumping without awaiting (runs in background)
+      pump();
+
+      // Return streaming response immediately
+      return new Response(readable, {
         status: statusCode,
         headers: respHeaders,
       });
