@@ -27,6 +27,60 @@ export default {
     const PORT = parseInt(env.BACKEND_PORT || "8443", 10);
     const url = new URL(request.url);
 
+    // --- Diagnostic endpoint: /__health ---
+    if (url.pathname === "/__health") {
+      const start = Date.now();
+      try {
+        const socket = connect({ hostname: BACKEND, port: PORT });
+        const writer = socket.writable.getWriter();
+        // Send a minimal HTTP request to test the connection
+        const testReq = `GET / HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n`;
+        await writer.write(new TextEncoder().encode(testReq));
+        writer.releaseLock();
+
+        // Try to read with a timeout using AbortSignal
+        const reader = socket.readable.getReader();
+        const readResult = await Promise.race([
+          reader.read(),
+          new Promise(resolve =>
+            setTimeout(() => resolve({ done: true, value: null, timeout: true }), 3000)
+          ),
+        ]);
+        reader.releaseLock();
+        try { socket.close(); } catch {}
+
+        const elapsed = Date.now() - start;
+        const gotData = readResult.value && readResult.value.length > 0;
+        const timedOut = readResult.timeout || false;
+
+        return new Response(JSON.stringify({
+          status: "ok",
+          backend: `${BACKEND}:${PORT}`,
+          tcp_connect: "success",
+          elapsed_ms: elapsed,
+          got_response_data: gotData,
+          read_timed_out: timedOut,
+          data_preview: gotData
+            ? new TextDecoder().decode(readResult.value.slice(0, 200))
+            : null,
+        }, null, 2), {
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (err) {
+        const elapsed = Date.now() - start;
+        return new Response(JSON.stringify({
+          status: "error",
+          backend: `${BACKEND}:${PORT}`,
+          tcp_connect: "failed",
+          elapsed_ms: elapsed,
+          error: err.message,
+        }, null, 2), {
+          status: 502,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+
     // Build the HTTP request line and headers to send over raw TCP
     const path = url.pathname + url.search;
     const method = request.method;
