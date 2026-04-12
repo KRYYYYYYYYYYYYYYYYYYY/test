@@ -16,7 +16,8 @@ XRAY_ASSET_DIR="/usr/local/share/xray"
 XRAY_CONFIG_DIR="/usr/local/etc/xray"
 XRAY_CONFIG="${XRAY_CONFIG_DIR}/config.json"
 ECH_URL="https://github.com/Akiyamov/singbox-ech-list/releases/latest/download/ech.dat"
-REPO_URL="https://raw.githubusercontent.com/KRYYYYYYYYYYYYYYYYYYY/test/main/config.json"
+REPO_URL_SINGLE="https://raw.githubusercontent.com/KRYYYYYYYYYYYYYYYYYYY/test/main/config.json"
+REPO_URL_DUAL="https://raw.githubusercontent.com/KRYYYYYYYYYYYYYYYYYYY/test/main/config-dual.json"
 
 echo -e "${CYAN}=======================================${NC}"
 echo -e "${CYAN}  Xray Stability Config — Deployment   ${NC}"
@@ -65,59 +66,136 @@ for geo in geoip.dat geosite.dat; do
     fi
 done
 
-# --- Step 2: Prompt for credentials ---
+# --- Step 2: Choose config mode ---
 echo ""
-echo -e "${CYAN}[2/5] Enter your server credentials:${NC}"
+echo -e "${CYAN}[2/6] Choose deployment mode:${NC}"
 echo ""
-
-read -rp "    Server domain (e.g., example.com): " USER_DOMAIN
-while [[ -z "${USER_DOMAIN}" ]]; do
-    echo -e "${RED}    Domain cannot be empty.${NC}"
-    read -rp "    Server domain: " USER_DOMAIN
-done
-
-read -rp "    Client UUID (from 3X-UI panel): " USER_UUID
-while [[ -z "${USER_UUID}" ]]; do
-    echo -e "${RED}    UUID cannot be empty.${NC}"
-    read -rp "    Client UUID: " USER_UUID
-done
-
-read -rp "    Secret path (from inbound, without leading /): " USER_PATH
-while [[ -z "${USER_PATH}" ]]; do
-    echo -e "${RED}    Path cannot be empty.${NC}"
-    read -rp "    Secret path: " USER_PATH
-done
-
+echo -e "  ${GREEN}1)${NC} xHTTP only (single outbound, Cloudflare Worker or direct)"
+echo -e "  ${GREEN}2)${NC} Reality + xHTTP DUAL (auto-failover: Reality primary, xHTTP fallback)"
 echo ""
-echo -e "${GREEN}    Domain: ${USER_DOMAIN}${NC}"
-echo -e "${GREEN}    UUID:   ${USER_UUID}${NC}"
-echo -e "${GREEN}    Path:   /${USER_PATH}${NC}"
+read -rp "    Choose mode [1/2] (default: 1): " CONFIG_MODE
+CONFIG_MODE=${CONFIG_MODE:-1}
+
+if [[ "${CONFIG_MODE}" == "2" ]]; then
+    REPO_URL="${REPO_URL_DUAL}"
+    echo -e "${GREEN}[OK] Mode: DUAL (Reality + xHTTP failover)${NC}"
+else
+    REPO_URL="${REPO_URL_SINGLE}"
+    echo -e "${GREEN}[OK] Mode: SINGLE (xHTTP only)${NC}"
+fi
+
+# --- Step 3: Prompt for credentials ---
+echo ""
+echo -e "${CYAN}[3/6] Enter your server credentials:${NC}"
 echo ""
 
-# --- Step 3: Download and patch config.json ---
-echo -e "${CYAN}[3/5] Downloading and patching config.json...${NC}"
+if [[ "${CONFIG_MODE}" == "2" ]]; then
+    # Dual mode: need server IP, Worker URL, Reality keys
+    read -rp "    Server IP (e.g., 87.242.119.137): " USER_SERVER_IP
+    while [[ -z "${USER_SERVER_IP}" ]]; do
+        echo -e "${RED}    Server IP cannot be empty.${NC}"
+        read -rp "    Server IP: " USER_SERVER_IP
+    done
+
+    read -rp "    Cloudflare Worker URL (e.g., my-api.user.workers.dev): " USER_WORKER_URL
+    while [[ -z "${USER_WORKER_URL}" ]]; do
+        echo -e "${RED}    Worker URL cannot be empty.${NC}"
+        read -rp "    Worker URL: " USER_WORKER_URL
+    done
+
+    read -rp "    Client UUID (from 3X-UI panel): " USER_UUID
+    while [[ -z "${USER_UUID}" ]]; do
+        echo -e "${RED}    UUID cannot be empty.${NC}"
+        read -rp "    Client UUID: " USER_UUID
+    done
+
+    read -rp "    Secret path (from inbound, without leading /): " USER_PATH
+    while [[ -z "${USER_PATH}" ]]; do
+        echo -e "${RED}    Path cannot be empty.${NC}"
+        read -rp "    Secret path: " USER_PATH
+    done
+
+    read -rp "    Reality public key (from 3X-UI): " USER_REALITY_PK
+    while [[ -z "${USER_REALITY_PK}" ]]; do
+        echo -e "${RED}    Public key cannot be empty.${NC}"
+        read -rp "    Reality public key: " USER_REALITY_PK
+    done
+
+    read -rp "    Reality short ID (from 3X-UI): " USER_SHORT_ID
+    while [[ -z "${USER_SHORT_ID}" ]]; do
+        echo -e "${RED}    Short ID cannot be empty.${NC}"
+        read -rp "    Reality short ID: " USER_SHORT_ID
+    done
+
+    echo ""
+    echo -e "${GREEN}    Server IP:    ${USER_SERVER_IP}${NC}"
+    echo -e "${GREEN}    Worker URL:   ${USER_WORKER_URL}${NC}"
+    echo -e "${GREEN}    UUID:         ${USER_UUID}${NC}"
+    echo -e "${GREEN}    Path:         /${USER_PATH}${NC}"
+    echo -e "${GREEN}    Reality PK:   ${USER_REALITY_PK}${NC}"
+    echo -e "${GREEN}    Short ID:     ${USER_SHORT_ID}${NC}"
+else
+    # Single mode: need domain, UUID, path
+    read -rp "    Server domain (e.g., example.com): " USER_DOMAIN
+    while [[ -z "${USER_DOMAIN}" ]]; do
+        echo -e "${RED}    Domain cannot be empty.${NC}"
+        read -rp "    Server domain: " USER_DOMAIN
+    done
+
+    read -rp "    Client UUID (from 3X-UI panel): " USER_UUID
+    while [[ -z "${USER_UUID}" ]]; do
+        echo -e "${RED}    UUID cannot be empty.${NC}"
+        read -rp "    Client UUID: " USER_UUID
+    done
+
+    read -rp "    Secret path (from inbound, without leading /): " USER_PATH
+    while [[ -z "${USER_PATH}" ]]; do
+        echo -e "${RED}    Path cannot be empty.${NC}"
+        read -rp "    Secret path: " USER_PATH
+    done
+
+    echo ""
+    echo -e "${GREEN}    Domain: ${USER_DOMAIN}${NC}"
+    echo -e "${GREEN}    UUID:   ${USER_UUID}${NC}"
+    echo -e "${GREEN}    Path:   /${USER_PATH}${NC}"
+fi
+echo ""
+
+# --- Step 4: Download and patch config.json ---
+echo -e "${CYAN}[4/6] Downloading and patching config.json...${NC}"
 mkdir -p "${XRAY_CONFIG_DIR}"
 
 # Download the template config from the repo
 if ! curl -sSfL "${REPO_URL}" -o "${XRAY_CONFIG}.template"; then
-    echo -e "${RED}[ERROR] Failed to download config.json from repository.${NC}"
+    echo -e "${RED}[ERROR] Failed to download config from repository.${NC}"
     echo -e "${RED}        URL: ${REPO_URL}${NC}"
     exit 1
 fi
 
-# Substitute placeholders
-sed \
-    -e "s|<SERVER_DOMAIN>|${USER_DOMAIN}|g" \
-    -e "s|<YOUR_UUID>|${USER_UUID}|g" \
-    -e "s|<SECRET_PATH>|${USER_PATH}|g" \
-    "${XRAY_CONFIG}.template" > "${XRAY_CONFIG}"
+# Substitute placeholders based on mode
+if [[ "${CONFIG_MODE}" == "2" ]]; then
+    sed \
+        -e "s|<SERVER_IP>|${USER_SERVER_IP}|g" \
+        -e "s|<WORKER_URL>|${USER_WORKER_URL}|g" \
+        -e "s|<YOUR_UUID>|${USER_UUID}|g" \
+        -e "s|<SECRET_PATH>|${USER_PATH}|g" \
+        -e "s|<REALITY_PUBLIC_KEY>|${USER_REALITY_PK}|g" \
+        -e "s|<SHORT_ID>|${USER_SHORT_ID}|g" \
+        "${XRAY_CONFIG}.template" > "${XRAY_CONFIG}"
+else
+    sed \
+        -e "s|<SERVER_DOMAIN>|${USER_DOMAIN}|g" \
+        -e "s|<YOUR_UUID>|${USER_UUID}|g" \
+        -e "s|<SECRET_PATH>|${USER_PATH}|g" \
+        "${XRAY_CONFIG}.template" > "${XRAY_CONFIG}"
+fi
 
 rm -f "${XRAY_CONFIG}.template"
 echo -e "${GREEN}[OK] config.json patched → ${XRAY_CONFIG}${NC}"
 
-# --- Step 4: Validate config ---
+# --- Step 5: Validate config ---
 echo ""
-echo -e "${CYAN}[4/5] Validating config with xray -test...${NC}"
+echo -e "${CYAN}[5/6] Validating config with xray -test...${NC}"
 
 export XRAY_LOCATION_ASSET="${XRAY_ASSET_DIR}"
 if xray -test -config "${XRAY_CONFIG}" 2>&1; then
@@ -128,9 +206,9 @@ else
     exit 1
 fi
 
-# --- Step 5: Restart xray service ---
+# --- Step 6: Restart xray service ---
 echo ""
-echo -e "${CYAN}[5/5] Restarting xray service...${NC}"
+echo -e "${CYAN}[6/6] Restarting xray service...${NC}"
 
 # Set XRAY_LOCATION_ASSET in the systemd service environment
 SYSTEMD_ENV_DIR="/etc/systemd/system/xray.service.d"
@@ -178,6 +256,15 @@ echo ""
 echo -e "${YELLOW}  Test connection:${NC}"
 echo -e "  curl -x socks5h://127.0.0.1:10808 https://ifconfig.me"
 echo ""
+if [[ "${CONFIG_MODE}" == "2" ]]; then
+    echo -e "${YELLOW}  Mode: DUAL (auto-failover)${NC}"
+    echo -e "  Reality → primary (Wi-Fi, stable)"
+    echo -e "  xHTTP   → fallback (mobile, TSPU blocks)"
+    echo -e ""
+    echo -e "${YELLOW}  burstObservatory pings every ~1 min.${NC}"
+    echo -e "  If Reality is down, traffic auto-switches to xHTTP."
+fi
+echo ""
 echo -e "${YELLOW}  Don't forget to configure server-side noise!${NC}"
-echo -e "  See: server-noise.json in the repository"
+echo -e "  Run on VPS: sudo bash -c \"\$(curl -sSfL https://raw.githubusercontent.com/KRYYYYYYYYYYYYYYYYYYY/test/main/deploy-server.sh)\""
 echo ""
