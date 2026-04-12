@@ -107,23 +107,28 @@ echo "0 */12 * * * root wget -qO /usr/share/xray/ech.dat https://github.com/Akiy
 }
 ```
 
-### ECH outbound (Freedom с ECH)
+### ECH outbound (Freedom с sniff-детекцией SNI)
 
 ```json
 {
   "tag": "freedom-ech",
   "protocol": "freedom",
+  "settings": {
+    "domainStrategy": "AsIs"
+  },
   "streamSettings": {
     "security": "tls",
     "tlsSettings": {
-      "fingerprint": "chrome",
-      "echConfigList": "cloudflare-ech.crypto.cloudflare.com+udp://1.1.1.1"
+      "serverName": "",
+      "fingerprint": "chrome"
     }
   }
 }
 ```
 
-Xray автоматически получает ECH-конфигурацию через DNS (HTTPS RR) и устанавливает зашифрованное соединение, скрывая SNI от DPI.
+Xray использует sniffing для детерминированного определения SNI из входящего трафика. Домены из `ech.dat:domains_ech` автоматически направляются на этот outbound, где TLS-соединение устанавливается напрямую с целевым сервером (Cloudflare). Пустой `serverName` означает, что SNI берётся из sniffed-домена.
+
+> **Примечание**: ECH-шифрование реализуется на стороне целевого сервера (Cloudflare). Клиент просто устанавливает TLS с chrome fingerprint. ТСПУ видит зашифрованный SNI благодаря ECH-поддержке сервера.
 
 **Требование**: использовать DoH/DoT DNS (не из РФ), так как российские DNS могут вырезать ECH-записи.
 
@@ -167,7 +172,7 @@ Xray автоматически получает ECH-конфигурацию ч
 
 ### Как использовать
 
-Fragment outbound используется как **dialer-proxy** через цепочку outbound:
+Fragment outbound **включён по умолчанию** как dialer-proxy для основного VLESS outbound:
 
 ```json
 {
@@ -175,42 +180,65 @@ Fragment outbound используется как **dialer-proxy** через ц
   "protocol": "vless",
   "streamSettings": {
     "sockopt": {
-      "dialerProxy": "fragment-proxy"
+      "dialerProxy": "fragment-proxy",
+      "tcpNoDelay": true
     }
   }
 }
 ```
 
-Либо как самостоятельный outbound для прямого доступа к заблокированным сайтам без прокси.
+Все TCP-соединения к серверу проходят через fragment-proxy, что обеспечивает стабильность handshake по умолчанию.
 
-### Когда использовать
+Для отключения (если фрагментация не нужна или вызывает задержки) — удалите строку `"dialerProxy": "fragment-proxy"` из sockopt.
+
+### Когда полезна фрагментация
 
 - ISP блокирует по SNI в ClientHello
 - Наблюдаются DPI False Positives на TLS-рукопожатии
 - Соединения обрываются именно в момент handshake
 
-### Когда НЕ использовать
+### Когда стоит отключить
 
 - Если ISP выполняет полную TCP-reassembly (тогда фрагментация бесполезна)
 - При работе через CDN (CDN сам терминирует TLS)
+- Если добавляет чрезмерную латентность на быстрых каналах
 
 ---
 
 ## Level 4: UDP Stabilization (Noise + Padding)
 
-### Что это
+### Архитектура: Noise через VLESS-туннель
 
-Два механизма:
-1. **UDP Noise** — отправка "шумовых" пакетов перед реальным UDP-соединением
-2. **xHTTP Padding** — рандомизация размеров HTTP-заголовков
+Весь UDP-трафик (порты 1026-65535) идёт **через VLESS-туннель**, а не напрямую. Noise-инъекция настраивается на **серверной стороне** (Freedom outbound на сервере), чтобы шумовые пакеты накладывались на выходе из туннеля, а не вместо него.
 
-### UDP Noise (Freedom outbound)
+```
+[Клиент] → UDP → [VLESS Tunnel] → [Сервер] → Freedom + Noise → [Интернет]
+```
+
+### Клиентская маршрутизация
+
+Весь трафик (TCP и UDP) маршрутизируется через `proxy-xhttp`:
 
 ```json
 {
-  "tag": "noise-udp",
+  "type": "field",
+  "port": "0-65535",
+  "outboundTag": "proxy-xhttp"
+}
+```
+
+Нет отдельного noise-outbound на клиенте — весь UDP защищён туннелем.
+
+### Серверный Noise (настройка на VPS)
+
+Добавьте noise в Freedom outbound на **сервере** (3X-UI → Outbound Settings):
+
+```json
+{
+  "tag": "server-freedom-noise",
   "protocol": "freedom",
   "settings": {
+    "domainStrategy": "AsIs",
     "noises": [
       {
         "type": "rand",
@@ -240,21 +268,9 @@ Fragment outbound используется как **dialer-proxy** через ц
 | `rand` 50-150 байт | Средний рандомный пакет — выравнивание статистического паттерна |
 | `base64` DNS-like | Имитация DNS-запроса — дополнительная мимикрия |
 
-### Routing для UDP-noise
+> **Важно**: Noise обходит порт 53 автоматически, так как инъекция может сломать DNS-резолвинг.
 
-```json
-{
-  "type": "field",
-  "network": "udp",
-  "port": "1026-65535",
-  "outboundTag": "noise-udp"
-}
-```
-
-Порт 53 (DNS) исключен автоматически — noise может сломать DNS-резолвинг.
-Порты 1-1025 исключены для совместимости со стандартными сервисами.
-
-### xHTTP Padding
+### xHTTP Padding (клиентская сторона)
 
 Параметр `xPaddingBytes: "100-1000"` автоматически добавляет случайные данные в HTTP-заголовки каждого запроса/ответа. Это:
 - Устраняет фиксированные паттерны размеров пакетов
@@ -267,7 +283,7 @@ Fragment outbound используется как **dialer-proxy** через ц
 
 ### 1. Подготовка сервера
 
-Убедитесь, что на сервере установлен Xray >= 25.1.1 с поддержкой xHTTP.
+Убедитесь, что на сервере установлен Xray >= 26.3.x с поддержкой xHTTP, ECH и noise.
 
 ### 2. Установка ech.dat на клиенте
 
@@ -312,14 +328,14 @@ curl -x socks5h://127.0.0.1:10808 https://crypto.cloudflare.com/cdn-cgi/trace
 
 ### Соединение обрывается при handshake
 
-1. Включить фрагментацию: добавить `dialerProxy: "fragment-proxy"` в sockopt основного outbound
+1. Фрагментация уже включена по умолчанию (`dialerProxy: "fragment-proxy"`)
 2. Уменьшить `length` до `"1-1"` (максимально агрессивная фрагментация)
 3. Увеличить `interval` до `"5-10"` (больше задержки между фрагментами)
 
 ### UDP-сервисы (мессенджеры) работают нестабильно
 
-1. Проверить, что noise-udp outbound активен в routing
-2. Попробовать увеличить диапазон noise: `"packet": "100-500"`
+1. Весь UDP идёт через VLESS-туннель — убедиться, что туннель стабилен
+2. На сервере: увеличить диапазон noise `"packet": "100-500"` в Freedom outbound
 3. Проверить, не блокирует ли ISP QUIC (UDP 443) — в этом случае переключиться на TCP
 
 ### Медленная скорость
@@ -341,7 +357,7 @@ curl -x socks5h://127.0.0.1:10808 https://crypto.cloudflare.com/cdn-cgi/trace
 
 | Клиент | xHTTP | ECH | Fragment | Noise |
 |--------|-------|-----|----------|-------|
-| Xray-core >= 25.1.1 | Yes | Yes | Yes | Yes |
+| Xray-core >= 26.3.x | Yes | Yes | Yes | Yes |
 | v2rayNG >= 1.9.x | Yes | Yes | Yes | Yes |
 | Nekobox | Yes | Partial | Yes | Yes |
 | Hiddify | Yes | Yes | Yes | Yes |
