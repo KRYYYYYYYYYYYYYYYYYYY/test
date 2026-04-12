@@ -49,7 +49,7 @@ NOISE_JSON='[
   ]'
 
 echo -e "${CYAN}============================================${NC}"
-echo -e "${CYAN}  3X-UI Server — Noise & ECH Deployment     ${NC}"
+echo -e "${CYAN}  3X-UI Server - Noise & ECH Deployment      ${NC}"
 echo -e "${CYAN}============================================${NC}"
 echo ""
 
@@ -73,7 +73,7 @@ mkdir -p "${XRAY_ASSET_DIR}"
 if wget -qO "${XRAY_ASSET_DIR}/ech.dat" "${ECH_URL}" 2>/dev/null || \
    curl -sSfL "${ECH_URL}" -o "${XRAY_ASSET_DIR}/ech.dat" 2>/dev/null; then
     ECH_SIZE=$(du -h "${XRAY_ASSET_DIR}/ech.dat" | cut -f1)
-    echo -e "${GREEN}[OK] ech.dat downloaded (${ECH_SIZE}) → ${XRAY_ASSET_DIR}/ech.dat${NC}"
+    echo -e "${GREEN}[OK] ech.dat downloaded (${ECH_SIZE}) -> ${XRAY_ASSET_DIR}/ech.dat${NC}"
 else
     echo -e "${YELLOW}[WARN] Failed to download ech.dat. Continuing without it.${NC}"
 fi
@@ -105,8 +105,8 @@ if [[ -z "$XUI_DB" ]]; then
     echo -e "${YELLOW}If 3X-UI is not installed, install it first:${NC}"
     echo -e "${YELLOW}  bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh)${NC}"
     echo -e ""
-    echo -e "${YELLOW}Or apply noise manually — copy this JSON into${NC}"
-    echo -e "${YELLOW}3X-UI → Panel Settings → Xray Configuration → Outbounds:${NC}"
+    echo -e "${YELLOW}Or apply noise manually - copy this JSON into${NC}"
+    echo -e "${YELLOW}3X-UI -> Panel Settings -> Xray Configuration -> Outbounds:${NC}"
     echo -e ""
     echo -e "${CYAN}${NOISE_JSON}${NC}"
     exit 1
@@ -144,7 +144,7 @@ if [[ -z "$CURRENT_CONFIG" ]]; then
     if [[ -z "$RUNTIME_CONFIG" ]]; then
         echo -e "${RED}[ERROR] Cannot find xray runtime config.${NC}"
         echo -e "${YELLOW}Apply noise manually in 3X-UI panel:${NC}"
-        echo -e "${YELLOW}Panel Settings → Xray Configuration Template${NC}"
+        echo -e "${YELLOW}Panel Settings -> Xray Configuration Template${NC}"
         echo -e "${YELLOW}Add to outbounds section a Freedom outbound with noises.${NC}"
         echo ""
         echo -e "${CYAN}${NOISE_JSON}${NC}"
@@ -162,7 +162,7 @@ HAS_NOISE=$(echo "$CURRENT_CONFIG" | jq '
 if [[ "$HAS_NOISE" -gt 0 ]]; then
     echo -e "${YELLOW}[INFO] Freedom outbound already has noise configured.${NC}"
     read -rp "    Overwrite existing noise config? [y/N]: " OVERWRITE
-    if [[ "${OVERWRITE,,}" != "y" ]]; then
+    if [[ ! "${OVERWRITE,,}" =~ ^y ]]; then
         echo -e "${GREEN}[OK] Skipping noise injection.${NC}"
     else
         # Replace existing noise in the first Freedom outbound
@@ -221,7 +221,7 @@ else
         echo -e "${RED}[ERROR] Failed to patch config with jq.${NC}"
         echo -e "${YELLOW}Restoring backup...${NC}"
         cp "$BACKUP" "$XUI_DB"
-        echo -e "${YELLOW}Apply noise manually — JSON block:${NC}"
+        echo -e "${YELLOW}Apply noise manually - JSON block:${NC}"
         echo -e "${CYAN}${NOISE_JSON}${NC}"
         exit 1
     fi
@@ -272,12 +272,12 @@ echo -e "  Backup:    ${BACKUP}"
 echo -e "  ECH DB:    ${XRAY_ASSET_DIR}/ech.dat"
 echo ""
 echo -e "${YELLOW}  Noise packets injected:${NC}"
-echo -e "    • rand 10-50 bytes   (entropy padding)"
-echo -e "    • rand 50-200 bytes  (bulk padding)"
-echo -e "    • HTTP GET ads.x5.ru (traffic mimicry)"
-echo -e "    • DNS query base64   (protocol mimicry)"
+echo -e "    - rand 10-50 bytes   (entropy padding)"
+echo -e "    - rand 50-200 bytes  (bulk padding)"
+echo -e "    - HTTP GET ads.x5.ru (traffic mimicry)"
+echo -e "    - DNS query base64   (protocol mimicry)"
 echo ""
 echo -e "${YELLOW}  Verify in 3X-UI panel:${NC}"
-echo -e "  Panel Settings → Xray Configuration Template → outbounds"
+echo -e "  Panel Settings -> Xray Configuration Template -> outbounds"
 echo -e "  Look for \"noises\" array in Freedom outbound."
 echo ""
