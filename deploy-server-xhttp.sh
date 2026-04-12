@@ -79,7 +79,8 @@ echo -e "${CYAN}[2/5] Logging in to 3X-UI panel...${NC}"
 LOGIN_RESP=$(curl -sk -w "\n%{http_code}" \
     -X POST \
     -H "Content-Type: application/x-www-form-urlencoded" \
-    -d "username=${PANEL_USER}&password=${PANEL_PASS}" \
+    --data-urlencode "username=${PANEL_USER}" \
+    --data-urlencode "password=${PANEL_PASS}" \
     -c "${COOKIE_FILE}" \
     "${PANEL_URL}${PANEL_BASE_PATH}/login")
 
@@ -111,9 +112,10 @@ XHTTP_PATH="${XHTTP_PATH:-${DEFAULT_PATH}}"
 read -rp "    Inbound port (default: 8443): " XHTTP_PORT
 XHTTP_PORT="${XHTTP_PORT:-8443}"
 
-# UUID — reuse existing or generate new
-read -rp "    UUID (Enter to reuse 48fd91f7-aaf1-4772-bb97-74880143bfff or paste new): " XHTTP_UUID
-XHTTP_UUID="${XHTTP_UUID:-48fd91f7-aaf1-4772-bb97-74880143bfff}"
+# UUID — generate new or reuse existing
+DEFAULT_UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || openssl rand -hex 16 | sed 's/\(........\)\(....\)\(....\)\(....\)\(............\)/\1-\2-\3-\4-\5/')
+read -rp "    UUID (Enter to generate new, or paste existing): " XHTTP_UUID
+XHTTP_UUID="${XHTTP_UUID:-${DEFAULT_UUID}}"
 
 # Client email (identifier in 3X-UI)
 DEFAULT_EMAIL="xhttp-worker-$(openssl rand -hex 4)"
@@ -248,16 +250,23 @@ echo -e "${GREEN}[OK] Inbound '${INBOUND_REMARK}' created (ID: ${INBOUND_ID})${N
 # Step 5: Run deploy-server.sh for noise injection
 # =========================================================================
 echo ""
-echo -e "${CYAN}[5/5] Running server-side noise injection...${NC}"
-echo ""
+read -rp "Run noise injection (deploy-server.sh)? [Y/n]: " RUN_NOISE
+RUN_NOISE="${RUN_NOISE:-Y}"
 
-NOISE_SCRIPT_URL="https://raw.githubusercontent.com/KRYYYYYYYYYYYYYYYYYYY/test/main/deploy-server.sh"
-if curl -sSfL "${NOISE_SCRIPT_URL}" -o /tmp/deploy-server.sh 2>/dev/null; then
-    bash /tmp/deploy-server.sh
-    rm -f /tmp/deploy-server.sh
+if [[ "${RUN_NOISE}" =~ ^[Yy] ]]; then
+    echo -e "${CYAN}[5/5] Running server-side noise injection...${NC}"
+    echo ""
+    NOISE_SCRIPT_URL="https://raw.githubusercontent.com/KRYYYYYYYYYYYYYYYYYYY/test/main/deploy-server.sh"
+    if curl -sSfL "${NOISE_SCRIPT_URL}" -o /tmp/deploy-server.sh 2>/dev/null; then
+        bash /tmp/deploy-server.sh
+        rm -f /tmp/deploy-server.sh
+    else
+        echo -e "${YELLOW}[WARN] Could not download deploy-server.sh. Run it manually later:${NC}"
+        echo -e "${YELLOW}       sudo bash -c \"\$(curl -sSfL ${NOISE_SCRIPT_URL})\"${NC}"
+    fi
 else
-    echo -e "${YELLOW}[WARN] Could not download deploy-server.sh. Run it manually later:${NC}"
-    echo -e "${YELLOW}       sudo bash -c \"\$(curl -sSfL ${NOISE_SCRIPT_URL})\"${NC}"
+    echo -e "${YELLOW}[5/5] Noise injection skipped. Run manually later if needed:${NC}"
+    echo -e "${YELLOW}       sudo bash -c \"\$(curl -sSfL https://raw.githubusercontent.com/KRYYYYYYYYYYYYYYYYYYY/test/main/deploy-server.sh)\"${NC}"
 fi
 
 # =========================================================================
