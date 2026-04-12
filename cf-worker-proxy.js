@@ -6,6 +6,8 @@
 // Uses TCP connect() API to reach raw IP backends directly,
 // bypassing Cloudflare's CDN proxy (avoids Error 1003).
 // Streams the response body instead of buffering (supports xHTTP).
+// Uses HTTP/1.0 to prevent chunked Transfer-Encoding which corrupts
+// binary VLESS protocol data when chunk markers leak into the body.
 //
 // Environment variables:
 //   BACKEND_HOST  — VPS IP or domain (e.g., 87.242.119.137)
@@ -86,7 +88,12 @@ export default {
     const method = request.method;
 
     const headerLines = [];
-    headerLines.push(`${method} ${path} HTTP/1.1`);
+    // Use HTTP/1.0 to prevent Go's net/http from using chunked
+    // Transfer-Encoding on streaming responses. Chunked encoding inserts
+    // hex size markers (e.g. "4\r\n", "7\r\n") into the body stream,
+    // which corrupts binary VLESS protocol data. HTTP/1.0 forces the
+    // server to stream raw bytes and close the connection when done.
+    headerLines.push(`${method} ${path} HTTP/1.0`);
     headerLines.push(`Host: ${url.hostname}`);
 
     // Forward relevant headers from the original request
@@ -109,6 +116,7 @@ export default {
       headerLines.push("Content-Length: 0");
     }
 
+    // Connection: close is implicit in HTTP/1.0, but include it explicitly
     headerLines.push("Connection: close");
     headerLines.push(""); // blank line ends headers
     headerLines.push("");
@@ -168,6 +176,7 @@ export default {
       const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 200;
 
       const respHeaders = new Headers();
+      let isChunked = false;
       const parsedHeaderLines = rawHeaders.split("\r\n").slice(1);
       for (const line of parsedHeaderLines) {
         const colonIdx = line.indexOf(":");
@@ -175,6 +184,12 @@ export default {
           const hName = line.substring(0, colonIdx).trim();
           const hValue = line.substring(colonIdx + 1).trim();
           const lName = hName.toLowerCase();
+          // Detect chunked encoding (should not happen with HTTP/1.0,
+          // but handle it as defense-in-depth)
+          if (lName === "transfer-encoding" && hValue.toLowerCase().includes("chunked")) {
+            isChunked = true;
+            continue;
+          }
           // Skip hop-by-hop headers
           if (lName === "transfer-encoding" || lName === "connection") continue;
           respHeaders.append(hName, hValue);
@@ -194,18 +209,63 @@ export default {
       const { readable, writable } = new TransformStream();
       const bodyWriter = writable.getWriter();
 
+      // --- Chunked decoding helper (defense-in-depth) ---
+      // If the backend somehow sends chunked encoding despite HTTP/1.0,
+      // decode chunk markers so raw binary data passes through cleanly.
+      const pumpChunked = async (initialData) => {
+        let buf = initialData;
+        const readMore = async () => {
+          const { done, value } = await reader.read();
+          if (done) return false;
+          const merged = new Uint8Array(buf.length + value.length);
+          merged.set(buf);
+          merged.set(value, buf.length);
+          buf = merged;
+          return true;
+        };
+        while (true) {
+          // Find chunk size line (hex digits followed by \r\n)
+          let crlfIdx = -1;
+          while (crlfIdx === -1) {
+            for (let i = 0; i < buf.length - 1; i++) {
+              if (buf[i] === 13 && buf[i + 1] === 10) { crlfIdx = i; break; }
+            }
+            if (crlfIdx === -1) {
+              if (!(await readMore())) return;
+            }
+          }
+          const sizeLine = new TextDecoder().decode(buf.slice(0, crlfIdx)).trim();
+          const chunkSize = parseInt(sizeLine, 16);
+          if (isNaN(chunkSize) || chunkSize === 0) return; // end of chunks
+          buf = buf.slice(crlfIdx + 2);
+          // Read chunk data
+          while (buf.length < chunkSize + 2) { // +2 for trailing \r\n
+            if (!(await readMore())) {
+              if (buf.length > 0) await bodyWriter.write(buf);
+              return;
+            }
+          }
+          await bodyWriter.write(buf.slice(0, chunkSize));
+          buf = buf.slice(chunkSize + 2); // skip trailing \r\n
+        }
+      };
+
       // Pump data from TCP socket to response stream in background
       const pump = async () => {
         try {
-          // Write leftover bytes first
-          if (leftover.length > 0) {
-            await bodyWriter.write(leftover);
-          }
-          // Stream remaining data from TCP socket
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            await bodyWriter.write(value);
+          if (isChunked) {
+            // Decode chunked transfer encoding
+            await pumpChunked(leftover);
+          } else {
+            // Raw streaming (expected path with HTTP/1.0)
+            if (leftover.length > 0) {
+              await bodyWriter.write(leftover);
+            }
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              await bodyWriter.write(value);
+            }
           }
         } catch (e) {
           // Connection closed or errored — just finish
