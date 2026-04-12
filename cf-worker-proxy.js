@@ -6,8 +6,8 @@
 // Uses TCP connect() API to reach raw IP backends directly,
 // bypassing Cloudflare's CDN proxy (avoids Error 1003).
 // Streams the response body instead of buffering (supports xHTTP).
-// Uses HTTP/1.0 to prevent chunked Transfer-Encoding which corrupts
-// binary VLESS protocol data when chunk markers leak into the body.
+// Uses HTTP/1.1 with an inline chunked-encoding decoder so that
+// binary VLESS protocol data is never corrupted by chunk markers.
 //
 // Environment variables:
 //   BACKEND_HOST  — VPS IP or domain (e.g., 87.242.119.137)
@@ -88,12 +88,11 @@ export default {
     const method = request.method;
 
     const headerLines = [];
-    // Use HTTP/1.0 to prevent Go's net/http from using chunked
-    // Transfer-Encoding on streaming responses. Chunked encoding inserts
-    // hex size markers (e.g. "4\r\n", "7\r\n") into the body stream,
-    // which corrupts binary VLESS protocol data. HTTP/1.0 forces the
-    // server to stream raw bytes and close the connection when done.
-    headerLines.push(`${method} ${path} HTTP/1.0`);
+    // Use HTTP/1.1 so Go's net/http supports streaming responses
+    // (required for xHTTP download channel). Go will use chunked
+    // Transfer-Encoding for streaming bodies, but we decode it below
+    // before forwarding to the client.
+    headerLines.push(`${method} ${path} HTTP/1.1`);
     headerLines.push(`Host: ${url.hostname}`);
 
     // Forward relevant headers from the original request
@@ -116,7 +115,7 @@ export default {
       headerLines.push("Content-Length: 0");
     }
 
-    // Connection: close is implicit in HTTP/1.0, but include it explicitly
+    // Tell backend to close the connection when done (no keep-alive)
     headerLines.push("Connection: close");
     headerLines.push(""); // blank line ends headers
     headerLines.push("");
@@ -184,8 +183,9 @@ export default {
           const hName = line.substring(0, colonIdx).trim();
           const hValue = line.substring(colonIdx + 1).trim();
           const lName = hName.toLowerCase();
-          // Detect chunked encoding (should not happen with HTTP/1.0,
-          // but handle it as defense-in-depth)
+          // Detect chunked encoding — Go's net/http uses this for
+          // streaming HTTP/1.1 responses. We must decode it so raw
+          // binary VLESS data passes through without chunk markers.
           if (lName === "transfer-encoding" && hValue.toLowerCase().includes("chunked")) {
             isChunked = true;
             continue;
@@ -209,9 +209,10 @@ export default {
       const { readable, writable } = new TransformStream();
       const bodyWriter = writable.getWriter();
 
-      // --- Chunked decoding helper (defense-in-depth) ---
-      // If the backend somehow sends chunked encoding despite HTTP/1.0,
-      // decode chunk markers so raw binary data passes through cleanly.
+      // --- Chunked decoding helper ---
+      // Go's net/http uses Transfer-Encoding: chunked for streaming
+      // HTTP/1.1 responses. Decode chunk framing so raw binary VLESS
+      // data passes through without hex size markers corrupting it.
       const pumpChunked = async (initialData) => {
         let buf = initialData;
         const readMore = async () => {
