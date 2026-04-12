@@ -228,6 +228,91 @@ systemctl start cloudflared
 
 ---
 
+## Dual-Config: Reality + xHTTP автоматический failover
+
+> **Для тех, кто хочет оставить Reality, но иметь запасной канал через Cloudflare.**
+
+### Как это работает?
+
+```
+Клиент (один конфиг)
+  │
+  ├─ burstObservatory (пинг каждые ~1 мин)
+  │     ├── proxy-reality  ─── OK? ──→ Используем Reality
+  │     └── proxy-xhttp    ─── OK? ──→ Используем xHTTP
+  │
+  └─ Balancer (leastPing)
+        ├── Reality жив   → трафик идёт напрямую (быстро, UDP)
+        └── Reality упал  → трафик автоматически через Worker (TCP)
+```
+
+### Что делает `config-dual.json`?
+
+| Компонент | Роль |
+|-----------|------|
+| `proxy-reality` | Основной outbound: VLESS + Reality + TCP (с фрагментацией) |
+| `proxy-xhttp` | Запасной outbound: VLESS + xHTTP через Cloudflare Worker |
+| `burstObservatory` | Проверяет оба outbound каждые ~1 минуту (пинг `gstatic.com`) |
+| `balancer` (leastPing) | Выбирает outbound с наименьшей задержкой |
+| `fallbackTag` | Если оба "упали" — по умолчанию идёт через Reality |
+
+### Преимущества:
+
+- **Один конфиг** — не нужно переключать вручную
+- **Автоматический failover** — если ТСПУ заблокировал Reality, трафик мгновенно переключится на xHTTP через Cloudflare
+- **Reality остаётся основным** — когда он работает, всё идёт через него (быстрее + UDP)
+- **Прозрачно** — клиент не замечает переключения
+
+### Развёртывание (dual-config):
+
+**One-liner для клиента:**
+```bash
+sudo bash -c "$(curl -sSfL https://raw.githubusercontent.com/KRYYYYYYYYYYYYYYYYYYY/test/main/deploy.sh)"
+# Выберите режим "2" (DUAL) при запуске
+```
+
+**Что спросит скрипт (режим DUAL):**
+1. Server IP — IP вашего VPS (например, `87.242.119.137`)
+2. Worker URL — URL Cloudflare Worker (например, `my-api.user.workers.dev`)
+3. UUID — из 3X-UI
+4. Secret path — путь из inbound
+5. Reality public key — из 3X-UI (Reality settings)
+6. Reality short ID — из 3X-UI (Reality settings)
+
+### Настройка burstObservatory:
+
+Параметры в `config-dual.json`:
+
+```json
+{
+  "burstObservatory": {
+    "subjectSelector": ["proxy-reality", "proxy-xhttp"],
+    "pingConfig": {
+      "destination": "https://connectivitycheck.gstatic.com/generate_204",
+      "interval": "1m",
+      "sampling": 3,
+      "timeout": "10s"
+    }
+  }
+}
+```
+
+- `interval: "1m"` — проверка каждую минуту
+- `sampling: 3` — берёт среднее из 3 последних замеров
+- `timeout: "10s"` — если outbound не ответил за 10 сек — считается мёртвым
+- `destination` — Google Connectivity Check (работает везде)
+
+### Когда использовать какой режим?
+
+| Ситуация | Режим |
+|----------|-------|
+| Reality работает стабильно | SINGLE (config.json) или DUAL |
+| Reality блокируется на мобильном | DUAL (config-dual.json) |
+| Reality полностью заблокирован | SINGLE xHTTP (config.json через Worker) |
+| Хочу максимальную надёжность | DUAL |
+
+---
+
 ## Быстрый старт (для студента без денег)
 
 1. **На VPS** — настрой серверный шум одной командой:
@@ -241,6 +326,11 @@ sudo bash -c "$(curl -sSfL https://raw.githubusercontent.com/KRYYYYYYYYYYYYYYYYY
    - Добавить переменную `BACKEND_HOST` = IP сервера
    - Готово! URL: `https://my-api.username.workers.dev`
 
-3. **Клиент** — укажи Worker URL в `config.json` вместо IP сервера
+3. **Клиент (Dual-Config)** — одна команда:
+```bash
+sudo bash -c "$(curl -sSfL https://raw.githubusercontent.com/KRYYYYYYYYYYYYYYYYYYY/test/main/deploy.sh)"
+# Выберите режим "2" (DUAL) → введите IP, Worker URL, UUID, path, Reality keys
+```
 
 **Итого: $0, два аккаунта (Cloudflare + VPS), 15 минут настройки.**
+**Результат: автоматический failover Reality ↔ xHTTP без ручного переключения.**
