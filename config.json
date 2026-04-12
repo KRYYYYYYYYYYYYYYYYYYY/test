@@ -1,0 +1,289 @@
+{
+  "log": {
+    "loglevel": "warning",
+    "access": "",
+    "error": ""
+  },
+
+  "dns": {
+    "servers": [
+      {
+        "address": "https://1.1.1.1/dns-query",
+        "domains": [
+          "ext:ech.dat:domains_noech",
+          "geosite:category-ads-all"
+        ]
+      },
+      {
+        "address": "https://8.8.8.8/dns-query",
+        "domains": [
+          "geosite:google",
+          "geosite:github"
+        ]
+      },
+      {
+        "address": "localhost",
+        "domains": [
+          "geosite:private"
+        ],
+        "skipFallback": true
+      }
+    ],
+    "queryStrategy": "UseIPv4",
+    "tag": "dns-inbound"
+  },
+
+  "inbounds": [
+    {
+      "tag": "socks-in",
+      "port": 10808,
+      "listen": "127.0.0.1",
+      "protocol": "socks",
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls", "quic"],
+        "routeOnly": true
+      },
+      "settings": {
+        "auth": "noauth",
+        "udp": true,
+        "ip": "127.0.0.1"
+      }
+    },
+    {
+      "tag": "http-in",
+      "port": 10809,
+      "listen": "127.0.0.1",
+      "protocol": "http",
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls"],
+        "routeOnly": true
+      }
+    },
+    {
+      "tag": "tun-dns-in",
+      "port": 10853,
+      "listen": "127.0.0.1",
+      "protocol": "dokodemo-door",
+      "settings": {
+        "address": "1.1.1.1",
+        "port": 53,
+        "network": "tcp,udp"
+      }
+    }
+  ],
+
+  "outbounds": [
+    {
+      "tag": "proxy-xhttp",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "<SERVER_DOMAIN>",
+            "port": 443,
+            "users": [
+              {
+                "id": "<YOUR_UUID>",
+                "encryption": "none",
+                "flow": ""
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "security": "tls",
+        "tlsSettings": {
+          "serverName": "<SERVER_DOMAIN>",
+          "fingerprint": "chrome",
+          "alpn": ["h2"],
+          "allowInsecure": false
+        },
+        "xhttpSettings": {
+          "path": "/<SECRET_PATH>",
+          "mode": "auto",
+          "xPaddingBytes": "100-1000",
+          "xmux": {
+            "maxConcurrency": "16-32",
+            "cMaxReuseTimes": "64-128",
+            "hMaxRequestTimes": "600-900",
+            "hMaxReusableSecs": "1800-3000",
+            "hKeepAlivePeriod": 0
+          },
+          "scMaxEachPostBytes": "500000-1000000",
+          "scMinPostsIntervalMs": "10-50"
+        },
+        "sockopt": {
+          "tcpNoDelay": true,
+          "mark": 255
+        }
+      }
+    },
+
+    {
+      "tag": "fragment-proxy",
+      "protocol": "freedom",
+      "settings": {
+        "fragment": {
+          "packets": "tlshello",
+          "length": "1-3",
+          "interval": "1-5"
+        }
+      },
+      "streamSettings": {
+        "sockopt": {
+          "tcpNoDelay": true,
+          "mark": 255
+        }
+      }
+    },
+
+    {
+      "tag": "freedom-ech",
+      "protocol": "freedom",
+      "settings": {
+        "domainStrategy": "AsIs"
+      },
+      "streamSettings": {
+        "security": "tls",
+        "tlsSettings": {
+          "serverName": "",
+          "fingerprint": "chrome",
+          "echConfigList": "cloudflare-ech.crypto.cloudflare.com+udp://1.1.1.1"
+        },
+        "sockopt": {
+          "mark": 255
+        }
+      }
+    },
+
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "settings": {
+        "domainStrategy": "AsIs"
+      },
+      "streamSettings": {
+        "sockopt": {
+          "mark": 255
+        }
+      }
+    },
+
+    {
+      "tag": "noise-udp",
+      "protocol": "freedom",
+      "settings": {
+        "domainStrategy": "AsIs",
+        "noises": [
+          {
+            "type": "rand",
+            "packet": "10-50",
+            "delay": "1-5"
+          },
+          {
+            "type": "rand",
+            "packet": "50-150",
+            "delay": "5-10"
+          },
+          {
+            "type": "base64",
+            "packet": "7nQBAAABAAAAAAAABnQtcmluZwZtc2VkZ2UDbmV0AAABAAE=",
+            "delay": "10-16"
+          }
+        ]
+      },
+      "streamSettings": {
+        "sockopt": {
+          "mark": 255
+        }
+      }
+    },
+
+    {
+      "tag": "block",
+      "protocol": "blackhole",
+      "settings": {
+        "response": {
+          "type": "http"
+        }
+      }
+    },
+
+    {
+      "tag": "dns-out",
+      "protocol": "dns"
+    }
+  ],
+
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {
+        "type": "field",
+        "inboundTag": ["tun-dns-in"],
+        "outboundTag": "dns-out"
+      },
+      {
+        "type": "field",
+        "protocol": ["dns"],
+        "outboundTag": "dns-out"
+      },
+
+      {
+        "type": "field",
+        "domain": [
+          "geosite:category-ads-all"
+        ],
+        "outboundTag": "block"
+      },
+
+      {
+        "type": "field",
+        "domain": [
+          "geosite:private"
+        ],
+        "outboundTag": "direct"
+      },
+      {
+        "type": "field",
+        "ip": [
+          "geoip:private"
+        ],
+        "outboundTag": "direct"
+      },
+
+      {
+        "type": "field",
+        "domain": [
+          "ext:ech.dat:domains_ech"
+        ],
+        "outboundTag": "freedom-ech"
+      },
+
+      {
+        "type": "field",
+        "network": "udp",
+        "port": "1026-65535",
+        "outboundTag": "noise-udp"
+      },
+
+      {
+        "type": "field",
+        "domain": [
+          "ext:ech.dat:domains_noech"
+        ],
+        "outboundTag": "proxy-xhttp"
+      },
+
+      {
+        "type": "field",
+        "port": "0-65535",
+        "outboundTag": "proxy-xhttp"
+      }
+    ]
+  }
+}
